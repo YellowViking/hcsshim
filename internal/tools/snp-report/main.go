@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Microsoft/hcsshim/internal/tools/snp-report/fake"
 	"github.com/Microsoft/hcsshim/pkg/amdsevsnp"
 )
 
@@ -44,16 +43,6 @@ func verboseReport(r amdsevsnp.Report) string {
 }
 
 func main() {
-	fakeReportFlag := flag.Bool(
-		"fake-report",
-		false,
-		"If true, don't issue an actual syscall to /dev/sev and return a fake predefined report",
-	)
-	hostDataFlag := flag.String(
-		"host-data",
-		"",
-		"Use together with 'fake-report', to set 'HostData' field of fake SNP report.",
-	)
 	reportDataFlag := flag.String(
 		"report-data",
 		"",
@@ -72,6 +61,8 @@ func main() {
 
 	flag.Parse()
 
+	fmt.Println("test my snp-report")
+
 	var reportBytes []byte
 	if *reportDataFlag != "" {
 		var err error
@@ -84,29 +75,43 @@ func main() {
 	if *binaryFmtFlag {
 		var binaryReport []byte
 		var err error
-		if *fakeReportFlag {
-			binaryReport, err = fake.FetchRawSNPReport()
-		} else {
-			binaryReport, err = amdsevsnp.FetchRawSNPReport(reportBytes)
-		}
+		binaryReport, err = amdsevsnp.FetchRawSNPReport(reportBytes)
+		fmt.Printf("FetchRawSNPReport fetched successfully\n")
 		if err != nil {
 			fmt.Println(err)
-			os.Exit(1)
 		}
 		fmt.Printf("%x\n", binaryReport)
-		os.Exit(0)
 	}
 
 	var report amdsevsnp.Report
 	var err error
-	if *fakeReportFlag {
-		report, err = fake.FetchSNPReport(*hostDataFlag)
-	} else {
-		report, err = amdsevsnp.FetchParsedSNPReport(reportBytes)
-	}
+	report, err = amdsevsnp.FetchParsedSNPReport(reportBytes)
+	fmt.Printf("FetchParsedSNPReport fetched successfully\n")
 	if err != nil {
 		fmt.Printf("failed to fetch SNP report: %s", err)
-		os.Exit(1)
+	}
+
+	fmt.Printf("Report fetched successfully\n")
+
+	var customData [64]byte
+	// fill with zeros
+	for i := range customData {
+		customData[i] = 0
+	}
+	var derived []byte
+	fmt.Printf("starting to fetch derived key\n")
+	derived, err = amdsevsnp.FetchDerivedKey(0)
+	if err != nil {
+		fmt.Printf("failed to fetch derived key: %s", err)
+	} else {
+		fmt.Printf("Derived key: %x\n", derived)
+	}
+	customData[0] = 1
+	derived, err = amdsevsnp.FetchDerivedKey(1)
+	if err != nil {
+		fmt.Printf("failed to fetch derived key: %s", err)
+	} else {
+		fmt.Printf("Derived key with customData[0] == 1: %x\n", derived)
 	}
 
 	if !*verbosePrintFlag {

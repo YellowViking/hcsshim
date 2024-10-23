@@ -55,11 +55,13 @@ type guestRequest6 struct {
 // AMD SEV ioctl definitions for kernel 5.x.
 const (
 	snpGetReportIoctlCode5 = 3223868161
+	snpDeriveKeyIoctlCode5 = 3223868162
 )
 
 // AMD SEV ioctl definitions for kernel 6.x.
 const (
 	snpGetReportIoctlCode6 = 3223343872
+	snpDeriveKeyIoctlCode6 = 3223343873
 )
 
 // reportRequest used to issue SEV-SNP request
@@ -152,7 +154,7 @@ type reportResponse struct {
 // It will have the conteints of reportResponse in the first unsafe.Sizeof(reportResponse{}) bytes.
 const reportResponseContainerLength6 = 4000
 
-const snpDevicePath5 = "/dev/sev"
+const snpDevicePath = "/dev/sev"
 const snpDevicePath6 = "/dev/sev-guest"
 
 func IsSNP() bool {
@@ -161,7 +163,7 @@ func IsSNP() bool {
 
 // Check if the code is being run in SNP VM for Linux kernel version 5.x.
 func isSNPVM5() bool {
-	_, err := os.Stat(snpDevicePath5)
+	_, err := os.Stat(snpDevicePath)
 	return !errors.Is(err, os.ErrNotExist)
 }
 
@@ -183,7 +185,8 @@ func FetchRawSNPReport(reportData []byte) ([]byte, error) {
 }
 
 func fetchRawSNPReport5(reportData []byte) ([]byte, error) {
-	f, err := os.OpenFile(snpDevicePath5, os.O_RDWR, 0)
+	fmt.Printf("opening %s\n", snpDevicePath)
+	f, err := os.OpenFile(snpDevicePath, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +223,86 @@ func fetchRawSNPReport5(reportData []byte) ([]byte, error) {
 	return msgReportOut.Report[:], nil
 }
 
+type MsgKeyRequest struct {
+	RootKeySelect    uint32
+	Rsvd             uint32
+	GuestFieldSelect uint64
+	VMPL             uint32
+	GuestSVN         uint32
+	TCBVersion       uint64
+}
+type MsgKeyResponse struct {
+	Status     uint32
+	Reserved   [28]byte
+	DerivedKey [32]byte
+}
+
+func FetchDerivedKey(GuestSVN uint32) ([]byte, error) {
+	snpDevicePath := snpDevicePath
+	if isSNPVM6() {
+		snpDevicePath = snpDevicePath6
+	}
+
+	fmt.Printf("opening %s for fetchDerivedKey\n", snpDevicePath)
+	f, err := os.OpenFile(snpDevicePath, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+	var (
+		_msgKeyRequest  MsgKeyRequest
+		_msgKeyResponse MsgKeyResponse
+	)
+
+	_msgKeyRequest.GuestSVN = GuestSVN
+
+	var payload interface{}
+	payload = &guestRequest5{
+		RequestMsgType:  msgKeyRequest,
+		ResponseMsgType: msgKeyResponse,
+		MsgVersion:      1,
+		RequestLength:   uint16(unsafe.Sizeof(_msgKeyRequest)),
+		RequestUAddr:    unsafe.Pointer(&_msgKeyRequest),
+		ResponseLength:  uint16(unsafe.Sizeof(_msgKeyResponse)),
+		ResponseUAddr:   unsafe.Pointer(&_msgKeyResponse),
+		Error:           0,
+	}
+
+	if isSNPVM6() {
+		payload = &guestRequest6{
+			MsgVersion:   1,
+			RequestData:  unsafe.Pointer(&_msgKeyRequest),
+			ResponseData: unsafe.Pointer(&_msgKeyResponse),
+			Error:        0,
+		}
+	}
+
+	var ioctlCode int = snpDeriveKeyIoctlCode5
+	if isSNPVM6() {
+		ioctlCode = snpDeriveKeyIoctlCode6
+	}
+
+	fmt.Printf("using snpDeriveKeyIoctlCode %d payload %v\n", ioctlCode, payload)
+	var pointer unsafe.Pointer
+	if isSNPVM6() {
+		pointer = unsafe.Pointer(payload.(*guestRequest6))
+	} else {
+		pointer = unsafe.Pointer(payload.(*guestRequest5))
+	}
+	if err := linux.Ioctl(f, ioctlCode, pointer); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Printf("Request: %+v\n", _msgKeyRequest)
+	fmt.Printf("Response status: %d, DerivedKey: %x\n", _msgKeyResponse.Status, _msgKeyResponse.DerivedKey)
+	return _msgKeyResponse.DerivedKey[:], nil
+}
+
 func fetchRawSNPReport6(reportData []byte) ([]byte, error) {
+	fmt.Printf("opening %s\n", snpDevicePath)
 	f, err := os.OpenFile(snpDevicePath6, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
